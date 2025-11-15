@@ -1,0 +1,271 @@
+{
+  "name": "Automated Lead Follow-ups",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-node-1",
+      "name": "Schedule Daily 10 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "leads",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lead_status",
+              "condition": "neq",
+              "keyValue": "booked"
+            }
+          ]
+        }
+      },
+      "id": "get-inactive-leads",
+      "name": "Get All Active Leads",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter leads that need follow-up\nconst leads = $input.all();\nconst now = new Date();\nconst followUpLeads = [];\n\nfor (const lead of leads) {\n  const lastContact = new Date(lead.json.last_contact);\n  const hoursSinceContact = (now - lastContact) / (1000 * 60 * 60);\n  \n  // Follow-up strategy:\n  // - 24 hours: First gentle reminder\n  // - 72 hours (3 days): Second reminder with offer\n  // - 168 hours (7 days): Final reminder with urgency\n  \n  let followUpType = null;\n  let followUpMessage = '';\n  \n  if (hoursSinceContact >= 168 && hoursSinceContact < 192) {\n    // 7 days - final reminder\n    followUpType = 'final_reminder';\n    followUpMessage = `Hi ${lead.json.name}! 👋\\n\\nThis is Gurusparsh Resort. We noticed you were interested in visiting Mahabaleshwar! 🏔️\\n\\n⏰ LAST CHANCE ALERT\\nWe're holding a few rooms for this month, but they're filling fast!\\n\\n🎁 SPECIAL OFFER FOR YOU:\\n✨ Book in next 48 hours: 15% OFF\\n✨ Complimentary bonfire included\\n✨ Free early check-in (subject to availability)\\n\\nReady to escape to the mountains? Just reply with your dates! 📅\\n\\nOr call us: +91 7972532018`;\n  } else if (hoursSinceContact >= 72 && hoursSinceContact < 96) {\n    // 3 days - reminder with offer\n    followUpType = 'second_reminder';\n    followUpMessage = `Hello ${lead.json.name}! 🌿\\n\\nStill planning your Mahabaleshwar escape? We'd love to host you at Gurusparsh Resort!\\n\\n🎁 SPECIAL OFFER:\\nBook this week and get:\\n✨ 10% off on room rates\\n✨ Complimentary welcome drink\\n✨ Free upgrade to valley view (subject to availability)\\n\\nOur cottages are filling up fast for the coming weeks. Would you like me to check availability for your dates?\\n\\nJust reply with your preferred dates and number of guests! 📅👥`;\n  } else if (hoursSinceContact >= 24 && hoursSinceContact < 48) {\n    // 24 hours - gentle reminder\n    followUpType = 'first_reminder';\n    followUpMessage = `Hi ${lead.json.name}! 😊\\n\\nThank you for your interest in Gurusparsh Resort!\\n\\nI wanted to follow up on your inquiry. Do you have any questions about:\\n\\n🏡 Our cottage types\\n🍽️ Dining options\\n🥾 Adventure activities\\n💰 Pricing and availability\\n\\nI'm here to help plan your perfect mountain getaway! Just reply to this message. 🏔️✨`;\n  }\n  \n  if (followUpType) {\n    followUpLeads.push({\n      json: {\n        phone_number: lead.json.phone_number,\n        name: lead.json.name,\n        lead_id: lead.json.id,\n        follow_up_type: followUpType,\n        message: followUpMessage,\n        hours_since_contact: Math.round(hoursSinceContact)\n      }\n    });\n  }\n}\n\nreturn followUpLeads;"
+      },
+      "id": "filter-follow-ups",
+      "name": "Filter & Create Follow-ups",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format for WhatsApp\nconst lead = $input.first().json;\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    to: lead.phone_number,\n    text: {\n      body: lead.message\n    },\n    lead_id: lead.lead_id,\n    follow_up_type: lead.follow_up_type\n  }\n};"
+      },
+      "id": "format-whatsapp-message",
+      "name": "Format WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/891928394004503/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer zinram3W9e0QWMNSmaxtICpoZAhYpiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: $json.messaging_product, to: $json.to, text: $json.text } }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 3000
+            }
+          }
+        }
+      },
+      "id": "send-follow-up",
+      "name": "Send Follow-up",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "conversations",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "lead_id",
+              "fieldValue": "={{ $json.lead_id }}"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ $('Format WhatsApp Message').item.json.text.body }}"
+            },
+            {
+              "fieldId": "sender",
+              "fieldValue": "ai"
+            },
+            {
+              "fieldId": "timestamp",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "log-follow-up",
+      "name": "Log Follow-up to Conversations",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "leads",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.lead_id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "last_contact",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "update-lead-timestamp",
+      "name": "Update Lead Timestamp",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Daily 10 AM": {
+      "main": [
+        [
+          {
+            "node": "Get All Active Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Active Leads": {
+      "main": [
+        [
+          {
+            "node": "Filter & Create Follow-ups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Create Follow-ups": {
+      "main": [
+        [
+          {
+            "node": "Format WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up": {
+      "main": [
+        [
+          {
+            "node": "Log Follow-up to Conversations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Follow-up to Conversations": {
+      "main": [
+        [
+          {
+            "node": "Update Lead Timestamp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,173 @@
+{
+  "name": "Automated Check-in Reminders",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-checkin-reminder",
+      "name": "Schedule Daily 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "booking_requests",
+        "returnAll": true,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "condition": "eq",
+              "keyValue": "confirmed"
+            }
+          ]
+        }
+      },
+      "id": "get-confirmed-bookings",
+      "name": "Get Confirmed Bookings",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check bookings that need reminders\nconst bookings = $input.all();\nconst now = new Date();\nconst reminders = [];\n\nfor (const booking of bookings) {\n  const checkInDate = new Date(booking.json.check_in_date);\n  const daysUntilCheckIn = Math.ceil((checkInDate - now) / (1000 * 60 * 60 * 24));\n  \n  let reminderType = null;\n  let message = '';\n  \n  const roomNames = {\n    'cliff_valley': 'Cliff Valley View',\n    'valley_view': 'Valley View',\n    'garden_view': 'Garden View'\n  };\n  \n  const roomName = roomNames[booking.json.room_type] || booking.json.room_type;\n  const checkInFormatted = checkInDate.toLocaleDateString('en-US', { \n    weekday: 'long', \n    month: 'short', \n    day: 'numeric' \n  });\n  \n  // Send reminders at 7 days, 3 days, and 1 day before check-in\n  if (daysUntilCheckIn === 7) {\n    reminderType = 'week_before';\n    message = `🏔️ UPCOMING STAY at Gurusparsh Resort\\n\\nHello ${booking.json.customer_name}! \\n\\nYour mountain escape is just 7 days away! We're so excited to welcome you! 🎉\\n\\n📋 BOOKING DETAILS:\\n━━━━━━━━━━━━━━━━━━\\n📅 Check-in: ${checkInFormatted}\\n🏡 Room: ${roomName} Cottage\\n👥 Guests: ${booking.json.number_of_guests}\\n\\n✅ REMINDER:\\n⏰ Check-in: 2:00 PM\\n🧳 Don't forget: Comfortable shoes for trekking, warm clothes for evenings\\n📸 Bring your camera for stunning views!\\n\\n🌟 WHAT TO EXPECT:\\n✨ Private waterfall on property\\n✨ 360° mountain view pool\\n✨ Fresh Maharashtrian cuisine\\n✨ Morning treks & stargazing\\n\\n📍 Location: https://goo.gl/maps/4FUAJin8ULtwvDY87\\n\\nNeed any special arrangements? Just reply!\\n\\nSee you soon! 🌿`;\n  } else if (daysUntilCheckIn === 3) {\n    reminderType = 'three_days_before';\n    message = `⛰️ YOUR STAY IS ALMOST HERE!\\n\\nHi ${booking.json.customer_name}! 😊\\n\\nOnly 3 days until you arrive at Gurusparsh Resort! \\n\\n📅 Check-in: ${checkInFormatted} at 2:00 PM\\n🏡 ${roomName} Cottage is being prepared for you!\\n\\n🎯 PRE-ARRIVAL CHECKLIST:\\n━━━━━━━━━━━━━━━━━━\\n☑️ Comfortable trekking shoes\\n☑️ Light jacket for cool evenings\\n☑️ Swimwear for the pool\\n☑️ Camera/phone fully charged\\n☑️ Any medicines you need\\n\\n🍽️ OPTIONAL ADD-ONS:\\nWant to pre-book activities?\\n• Forest trek + breakfast: ₹700/person\\n• Bonfire evening: ₹350\\n• BBQ arrangement: ₹850\\n\\nJust reply to this message to add!\\n\\n🚗 TRAVEL TIP:\\nFrom Pune: 3 hours (120km)\\nFrom Mumbai: 5.5 hours (260km)\\nBest to start early to avoid traffic!\\n\\n📍 Maps: https://goo.gl/maps/4FUAJin8ULtwvDY87\\n\\nSafe travels! 🚗✨`;\n  } else if (daysUntilCheckIn === 1) {\n    reminderType = 'day_before';\n    message = `🎉 TOMORROW IS THE DAY!\\n\\nHello ${booking.json.customer_name}! 🏔️\\n\\nYour mountain getaway starts TOMORROW! We can't wait to welcome you! \\n\\n📅 CHECK-IN TOMORROW:\\n━━━━━━━━━━━━━━━━━━\\n⏰ Time: 2:00 PM onwards\\n🏡 Room: ${roomName} Cottage\\n👥 Guests: ${booking.json.number_of_guests}\\n\\n📍 DIRECTIONS:\\n━━━━━━━━━━━━━━━━━━\\nGurusparsh Resort\\nMahabaleshwar Valley, Maharashtra\\n\\nGoogle Maps: https://goo.gl/maps/4FUAJin8ULtwvDY87\\n\\n📞 Navigation help: +91 7972532018\\n\\n✨ ON ARRIVAL:\\n• Check-in at reception\\n• Welcome drink served\\n• Room orientation\\n• Activity briefing\\n\\n🌤️ TOMORROW'S WEATHER:\\nPleasant mountain weather\\nPerfect for outdoor activities!\\n\\n⚡ EARLY CHECK-IN:\\nArriving before 2 PM? \\nCall us - we'll try our best! 😊\\n\\nHave a safe journey!\\nSee you tomorrow! 🌿✨`;\n  } else if (daysUntilCheckIn === 0) {\n    // Day of check-in\n    reminderType = 'check_in_day';\n    message = `🏔️ WELCOME DAY!\\n\\nGood morning ${booking.json.customer_name}! ☀️\\n\\nToday is the day! We're all set to welcome you to Gurusparsh Resort! 🎊\\n\\n⏰ CHECK-IN: 2:00 PM\\n🏡 ${roomName} Cottage is ready!\\n\\n📞 ON YOUR WAY?\\nCall us for directions: +91 7972532018\\n\\n📍 Location: https://goo.gl/maps/4FUAJin8ULtwvDY87\\n\\n✨ Your mountain escape awaits! \\nSafe journey! 🚗🌿`;\n  }\n  \n  if (reminderType) {\n    reminders.push({\n      json: {\n        phone_number: booking.json.phone_number,\n        customer_name: booking.json.customer_name,\n        booking_id: booking.json.id,\n        reminder_type: reminderType,\n        message: message,\n        days_until_checkin: daysUntilCheckIn\n      }\n    });\n  }\n}\n\nreturn reminders;"
+      },
+      "id": "create-reminders",
+      "name": "Create Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const reminder = $input.first().json;\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    to: reminder.phone_number,\n    text: {\n      body: reminder.message\n    },\n    booking_id: reminder.booking_id,\n    reminder_type: reminder.reminder_type\n  }\n};"
+      },
+      "id": "format-reminder-message",
+      "name": "Format Reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/891928394004503/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer zinram3W9e0QWMNSmaxtICpoZAhYpiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: $json.messaging_product, to: $json.to, text: $json.text } }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          }
+        }
+      },
+      "id": "send-reminder",
+      "name": "Send Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Daily 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Get Confirmed Bookings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Confirmed Bookings": {
+      "main": [
+        [
+          {
+            "node": "Create Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Reminders": {
+      "main": [
+        [
+          {
+            "node": "Format Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Reminder": {
+      "main": [
+        [
+          {
+            "node": "Send Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

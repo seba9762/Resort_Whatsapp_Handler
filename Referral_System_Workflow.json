@@ -1,0 +1,247 @@
+{
+  "name": "Referral Reward System",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "referral-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "referral-webhook",
+      "name": "Referral Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "referral-webhook-v1"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract referral info from webhook\nconst body = $input.item.json.body || $input.item.json;\n\nreturn {\n  json: {\n    referrer_phone: body.referrer_phone,\n    referee_phone: body.referee_phone,\n    booking_id: body.booking_id,\n    booking_amount: body.booking_amount || 0\n  }\n};"
+      },
+      "id": "extract-referral-data",
+      "name": "Extract Referral Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "referrals",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "referrer_phone",
+              "fieldValue": "={{ $json.referrer_phone }}"
+            },
+            {
+              "fieldId": "referee_phone",
+              "fieldValue": "={{ $json.referee_phone }}"
+            },
+            {
+              "fieldId": "booking_id",
+              "fieldValue": "={{ $json.booking_id }}"
+            },
+            {
+              "fieldId": "reward_amount",
+              "fieldValue": "={{ Math.floor($json.booking_amount * 0.10) }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "pending"
+            },
+            {
+              "fieldId": "created_at",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "save-referral",
+      "name": "Save Referral",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "leads",
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "phone_number",
+              "condition": "eq",
+              "keyValue": "={{ $json.referrer_phone }}"
+            }
+          ]
+        }
+      },
+      "id": "get-referrer-details",
+      "name": "Get Referrer Details",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        900,
+        300
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const referralData = $('Save Referral').first().json;\nconst referrerData = $input.first().json;\n\nconst rewardAmount = Math.floor(referralData.reward_amount);\nconst referrerName = referrerData.name || 'Valued Guest';\n\nconst message = `🎉 CONGRATULATIONS ${referrerName}!\\n\\n━━━━━━━━━━━━━━━━━━━━━━━━\\n🎁 REFERRAL REWARD EARNED\\n━━━━━━━━━━━━━━━━━━━━━━━━\\n\\nThank you for referring Gurusparsh Resort! 🏔️✨\\n\\nYour friend has completed their booking, and you've earned:\\n\\n💰 REWARD: ₹${rewardAmount}\\n\\n━━━━━━━━━━━━━━━━━━━━━━━━\\n✨ HOW TO CLAIM:\\n━━━━━━━━━━━━━━━━━━━━━━━━\\n\\nYou can use this reward on:\\n✅ Your next booking (instant discount)\\n✅ Room upgrade\\n✅ Complimentary activities\\n\\nOr we can transfer to:\\n💳 Bank account\\n📱 UPI\\n\\nJust reply with your preference!\\n\\n━━━━━━━━━━━━━━━━━━━━━━━━\\n🌟 KEEP REFERRING, KEEP EARNING!\\n━━━━━━━━━━━━━━━━━━━━━━━━\\n\\nShare Gurusparsh with more friends and earn 10% of their booking amount every time!\\n\\nYour unique referral link:\\nhttps://wa.me/15551615445?text=Referred-by-${referralData.referrer_phone}\\n\\nThank you for being our brand ambassador! 🙏\\n\\n- Team Gurusparsh Resort 🌿`;\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    to: referralData.referrer_phone,\n    text: {\n      body: message\n    }\n  }\n};"
+      },
+      "id": "format-reward-message",
+      "name": "Format Reward Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/891928394004503/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer zinram3W9e0QWMNSmaxtICpoZAhYpiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "send-reward-notification",
+      "name": "Send Reward Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Referral processed successfully",
+        "options": {}
+      },
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Referral Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Referral Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Referral Data": {
+      "main": [
+        [
+          {
+            "node": "Save Referral",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Referral": {
+      "main": [
+        [
+          {
+            "node": "Get Referrer Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Referrer Details": {
+      "main": [
+        [
+          {
+            "node": "Format Reward Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Reward Message": {
+      "main": [
+        [
+          {
+            "node": "Send Reward Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reward Notification": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
