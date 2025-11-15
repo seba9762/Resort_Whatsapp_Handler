@@ -506,7 +506,7 @@
           "parameters": [
             {
               "name": "Authorization",
-              "value": "Bearer EAALpNygKnZAABPZCjen6X6pS5EWyO1mSCa7I6inyJwRM6oXF1bEn3Hzinram3W9e0QWMNSmaxtICpoZAhYp3dLtG4wGZCRMHGYke2ps6Rks9ZBD8dlEd7p6vlUSnDiWZB0yrU5o6MwjtpN9tZA95nX36tSZCQ1jODTEK4wxmpo1RG0N2agZABJLHXnQNlIfIv6qbsiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH"
+              "value": "Bearer "
             },
             {
               "name": "Content-Type",
