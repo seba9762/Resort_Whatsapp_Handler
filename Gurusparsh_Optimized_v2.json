@@ -1,0 +1,646 @@
+{
+  "name": "Gurusparsh Resort - Optimized v2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook-guru-v2",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-entry",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-4800, 0],
+      "webhookId": "guru-resort-v2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify WhatsApp webhook signature for security\nconst crypto = require('crypto');\n\nconst body = $input.item.json.body || $input.item.json;\nconst headers = $input.item.json.headers || {};\n\n// Webhook verification (GET request)\nif ($input.item.json.query?.['hub.mode'] === 'subscribe') {\n  const mode = $input.item.json.query['hub.mode'];\n  const token = $input.item.json.query['hub.verify_token'];\n  const challenge = $input.item.json.query['hub.challenge'];\n  \n  // Use environment variable for verify token\n  const VERIFY_TOKEN = $env.WHATSAPP_VERIFY_TOKEN || 'your-verify-token-here';\n  \n  if (mode && token === VERIFY_TOKEN) {\n    return { json: { challenge, verified: true } };\n  } else {\n    throw new Error('Webhook verification failed');\n  }\n}\n\n// Optional: Verify webhook signature for POST requests\nconst signature = headers['x-hub-signature-256'];\nif (signature && $env.WHATSAPP_APP_SECRET) {\n  const expectedSignature = 'sha256=' + crypto\n    .createHmac('sha256', $env.WHATSAPP_APP_SECRET)\n    .update(JSON.stringify(body))\n    .digest('hex');\n  \n  if (signature !== expectedSignature) {\n    throw new Error('Invalid webhook signature');\n  }\n}\n\ntry {\n  if (!body.entry || !body.entry[0]) {\n    return { json: { skip: true, reason: 'Not a message webhook' } };\n  }\n  \n  const entry = body.entry[0];\n  const changes = entry.changes[0];\n  const value = changes.value;\n  \n  // Handle different webhook types\n  if (value.statuses) {\n    // Message status update - log but don't process\n    return { json: { skip: true, reason: 'Status update webhook' } };\n  }\n  \n  const messages = value.messages || [];\n  const contacts = value.contacts || [];\n  \n  if (messages.length === 0) {\n    return { json: { skip: true, reason: 'No messages in webhook' } };\n  }\n  \n  const message = messages[0];\n  const contact = contacts[0] || {};\n  \n  // Enhanced message type handling\n  let messageText = '';\n  let messageType = message.type;\n  let mediaId = null;\n  let mediaUrl = null;\n  \n  switch (message.type) {\n    case 'text':\n      messageText = message.text?.body || '';\n      break;\n    case 'button':\n      messageText = message.button?.text || '';\n      break;\n    case 'interactive':\n      if (message.interactive?.type === 'button_reply') {\n        messageText = message.interactive.button_reply.title;\n      } else if (message.interactive?.type === 'list_reply') {\n        messageText = message.interactive.list_reply.title;\n      }\n      break;\n    case 'image':\n      mediaId = message.image?.id;\n      messageText = message.image?.caption || '[Image received]';\n      break;\n    case 'video':\n      mediaId = message.video?.id;\n      messageText = message.video?.caption || '[Video received]';\n      break;\n    case 'document':\n      mediaId = message.document?.id;\n      messageText = message.document?.caption || message.document?.filename || '[Document received]';\n      break;\n    case 'audio':\n      mediaId = message.audio?.id;\n      messageText = '[Audio message]';\n      break;\n    case 'location':\n      messageText = `[Location: ${message.location?.latitude}, ${message.location?.longitude}]`;\n      break;\n    default:\n      messageText = `[${message.type} message]`;\n  }\n  \n  return {\n    json: {\n      phone_number: message.from,\n      message_text: messageText,\n      message_type: messageType,\n      media_id: mediaId,\n      sender_name: contact.profile?.name || 'Guest',\n      message_id: message.id,\n      timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),\n      raw_message: message,\n      webhook_id: entry.id\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      error: true,\n      error_type: 'parsing_error',\n      message: 'Failed to parse webhook',\n      details: error.message,\n      stack: error.stack\n    }\n  };\n}"
+      },
+      "id": "extract-message",
+      "name": "Extract & Validate Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4560, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notTrue"
+              }
+            },
+            {
+              "id": "error-check",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notTrue"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "should-process",
+      "name": "Should Process?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-4320, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Rate limiting & spam detection\nconst phoneNumber = $json.phone_number;\nconst now = Date.now();\n\n// Initialize rate limit tracking (in production, use Redis/DB)\nconst rateLimitWindow = 60000; // 1 minute\nconst maxMessagesPerWindow = 10;\n\n// Simple in-memory tracking (replace with Redis in production)\nif (!global.rateLimitTracker) {\n  global.rateLimitTracker = {};\n}\n\nif (!global.rateLimitTracker[phoneNumber]) {\n  global.rateLimitTracker[phoneNumber] = [];\n}\n\n// Clean old entries\nglobal.rateLimitTracker[phoneNumber] = global.rateLimitTracker[phoneNumber]\n  .filter(timestamp => now - timestamp < rateLimitWindow);\n\n// Check rate limit\nif (global.rateLimitTracker[phoneNumber].length >= maxMessagesPerWindow) {\n  return {\n    json: {\n      rate_limited: true,\n      phone_number: phoneNumber,\n      message: 'Rate limit exceeded. Please slow down.'\n    }\n  };\n}\n\n// Add current message\nglobal.rateLimitTracker[phoneNumber].push(now);\n\n// Spam detection patterns\nconst messageText = ($json.message_text || '').toLowerCase();\nconst spamPatterns = [\n  /\\b(win|won|prize|lottery|claim|free money)\\b/i,\n  /\\b(click here|click now|urgent|act now)\\b/i,\n  /\\b(congratulations|you've been selected)\\b/i\n];\n\nconst isSpam = spamPatterns.some(pattern => pattern.test(messageText));\n\nreturn {\n  json: {\n    ...$json,\n    rate_limited: false,\n    spam_detected: isSpam,\n    message_count: global.rateLimitTracker[phoneNumber].length\n  }\n};"
+      },
+      "id": "rate-limit-check",
+      "name": "Rate Limit & Spam Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4080, 80]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Upsert lead (create or update)\nINSERT INTO leads (phone_number, name, last_contact, message_count)\nVALUES (\n  '{{ $json.phone_number }}',\n  '{{ $json.sender_name }}',\n  '{{ $now.toISO() }}',\n  1\n)\nON CONFLICT (phone_number) DO UPDATE SET\n  name = EXCLUDED.name,\n  last_contact = EXCLUDED.last_contact,\n  message_count = leads.message_count + 1\nRETURNING *;"
+      },
+      "id": "upsert-lead",
+      "name": "Upsert Lead",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-3840, 80],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Get recent conversation history efficiently\nSELECT \n  id,\n  message,\n  sender,\n  timestamp,\n  sentiment\nFROM conversations\nWHERE lead_id = (\n  SELECT id FROM leads WHERE phone_number = '{{ $json.phone_number }}' LIMIT 1\n)\nORDER BY timestamp DESC\nLIMIT 10;"
+      },
+      "id": "get-history",
+      "name": "Get Conversation History",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-3600, 80],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare enriched context\nconst messageData = $input.first().json;\nconst leadData = $('Upsert Lead').first()?.json || {};\nconst conversations = $input.all().slice(1); // Skip first item (current message)\n\n// Format conversation history\nlet conversationHistory = '';\nif (conversations.length > 0) {\n  conversationHistory = conversations\n    .reverse() // Oldest first\n    .map(c => {\n      const sender = c.json.sender === 'customer' ? 'Customer' :\n                     c.json.sender === 'owner' ? 'Manager' : 'AI';\n      const sentiment = c.json.sentiment ? ` [${c.json.sentiment}]` : '';\n      return `${sender}${sentiment}: ${c.json.message}`;\n    })\n    .join('\\n');\n} else {\n  conversationHistory = '[First message from customer]';\n}\n\n// Detect business context\nconst now = new Date();\nconst hour = now.getHours();\nconst day = now.getDay();\n\nconst isBusinessHours = hour >= 9 && hour < 21; // 9 AM - 9 PM\nconst isWeekend = day === 0 || day === 6;\n\n// Calculate customer metrics\nconst messageCount = leadData.message_count || 1;\nconst isNewCustomer = messageCount === 1;\nconst isReturningCustomer = messageCount > 5;\n\nreturn {\n  json: {\n    // IDs\n    lead_id: leadData.id,\n    phone_number: messageData.phone_number,\n    \n    // Customer info\n    customer_name: messageData.sender_name,\n    is_new_customer: isNewCustomer,\n    is_returning_customer: isReturningCustomer,\n    total_messages: messageCount,\n    \n    // Message info\n    current_message: messageData.message_text,\n    message_type: messageData.message_type,\n    media_id: messageData.media_id,\n    \n    // Context\n    conversation_history: conversationHistory,\n    conversation_count: conversations.length,\n    \n    // Business context\n    is_business_hours: isBusinessHours,\n    is_weekend: isWeekend,\n    current_time: now.toISOString(),\n    \n    // Flags\n    spam_detected: messageData.spam_detected,\n    rate_limited: messageData.rate_limited,\n    \n    // Full data\n    lead_data: leadData,\n    message_data: messageData\n  }\n};"
+      },
+      "id": "prepare-context",
+      "name": "Prepare Enhanced Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3360, 80]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an advanced intent classifier for a luxury resort booking system.\n\nAnalyze the conversation and classify into ONE category:\n\n**HANDOFF** - Transfer to human agent if:\n- Customer explicitly asks for pricing/rates for specific dates\n- Customer explicitly asks about availability for specific dates\n- Customer mentions booking/reservation with details\n- Customer says they want to book AND has provided dates\n- Customer explicitly requests to speak with manager/owner\n- Customer has a complaint or issue\n- Customer is frustrated (detect from tone/language)\n- Customer provided all booking details (dates, guests, room type)\n\n**INFO** - AI can handle if:\n- General questions about resort, facilities, rooms, activities\n- Customer is answering AI's questions (providing details)\n- Customer is having a casual conversation\n- Customer needs clarification or information\n- Customer is greeting or small talk\n\n**CRITICAL RULES**:\n1. If AI just asked a question and customer is answering → INFO\n2. If customer shows ANY frustration → HANDOFF\n3. If customer has complete booking details → HANDOFF\n4. When in doubt between INFO and HANDOFF → HANDOFF\n\nRespond with ONLY one word: \"HANDOFF\" or \"INFO\"\n\nContext:\n- Business Hours: {{ $json.is_business_hours ? 'Yes' : 'No' }}\n- Customer Type: {{ $json.is_new_customer ? 'New' : 'Returning' }}\n- Message Count: {{ $json.total_messages }}",
+              "role": "system"
+            },
+            {
+              "content": "=Conversation History:\n{{ $json.conversation_history }}\n\nCurrent Message:\n{{ $json.current_message }}\n\nClassify:"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 10,
+          "temperature": 0.1
+        }
+      },
+      "id": "classify-intent",
+      "name": "Classify Intent (GPT-4o)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [-3120, 80],
+      "credentials": {
+        "openAiApi": {
+          "id": "vFc3OjZ2fU29BIiw",
+          "name": "OpenAi account"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "handoff-condition",
+              "leftValue": "={{ $json.message?.content || $json.content || '' }}",
+              "rightValue": "HANDOFF",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "route-intent",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2880, 80]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are an AI receptionist for Gurusparsh Resort in Mahabaleshwar, India.\n\n**YOUR PERSONALITY:**\n- Warm, professional, and concise\n- Helpful but not pushy\n- Use minimal emojis: 🏔️ 🌿 ✨ only\n- 2-3 sentences per response (keep it brief!)\n\n**GREETING (first-time customer):**\n\"Welcome to Gurusparsh Resort! 🏔️ We're a luxury retreat in Mahabaleshwar with:\n• 3 types of wooden cottages with valley views\n• Private waterfall on property\n• Crystal-clear pool with 360° mountain views\n• Authentic Maharashtrian cuisine\n• Adventure activities (treks, safari, stargazing)\n\nVirtual tour: https://www.google.com/maps/@17.9119095,73.7674425,3a,75y\nInstagram: @gurusparsh\n\nHow can I help plan your getaway?\"\n\n**RESORT INFORMATION:**\n\n*Room Types:*\n1. Cliff Valley View - Premium, floating balcony, best views (₹₹₹)\n2. Valley View - Wooden cottage, private garden, valley views (₹₹)\n3. Garden View - Garden setting, strawberry views (₹)\n\n*Facilities:*\n- Sakhatrupti Restaurant (Maharashtrian home-cooked food)\n- Swimming Pool (360° mountain views)\n- In-room Spa services\n- Library\n- Private Waterfall\n\n*Activities & Prices:*\n- Forest trek + breakfast: ₹700/person\n- Jungle safari to sunset point: ₹300/person\n- Stargazing from plateau: ₹400/person\n- Fish therapy at waterfall: Complimentary\n- BBQ: ₹850 | Bonfire: ₹350\n\n*Contact:*\n- Phone: +91 7972532018\n- Location: Mahabaleshwar Valley, Maharashtra\n- Maps: https://goo.gl/maps/4FUAJin8ULtwvDY87\n- Instagram: @gurusparsh\n\n*Photo Links:*\n- Virtual Tour: https://www.google.com/maps/@17.9119095,73.7674425,3a,75y\n- Cliff Valley: https://photos.app.goo.gl/5C9AKJ375wQKJFt56\n- Valley View: https://photos.app.goo.gl/dtef53GMEAYjW1ReA\n- Garden View: https://photos.app.goo.gl/wVgVZgzHEQcKJbee9\n- Pool: https://photos.app.goo.gl/QW9qi8fSiNHaB8UB9\n- Activities: https://photos.app.goo.gl/QA8c7eP9P7MdrKCs9\n\n**COMMUNICATION RULES:**\n1. Be concise (2-3 sentences max)\n2. Answer directly, don't repeat their question\n3. Share photo links when discussing specific facilities\n4. NEVER quote room prices - those need manager confirmation\n5. NEVER give availability info - that needs real-time check\n6. If asked about booking/prices/availability → Say: \"Let me connect you with our booking manager for accurate rates and availability!\"\n\n**CHECK HISTORY FIRST:**\nBefore asking for information, check if customer already mentioned:\n- Dates (e.g., \"Dec 13-15\")\n- Guest count (e.g., \"4 people\")\n- Room preference\n- Special requests\n\nAcknowledge what they've shared before asking for more.\n\n**SPECIAL SCENARIOS:**\n\n*Outside Business Hours (9 PM - 9 AM):*\n\"Thanks for your message! Our team will respond first thing in the morning (9 AM). Meanwhile, feel free to explore our virtual tour: [link]\"\n\n*Returning Customer:*\n\"Welcome back! 🌿 Great to hear from you again.\"\n\n*Media Messages:*\nIf customer sends image/video: \"Thanks for sharing! How can I help you today?\"\n\nCurrent Context:\n- Date: {{ $json.current_time }}\n- Business Hours: {{ $json.is_business_hours ? 'Yes' : 'No' }}\n- Customer Type: {{ $json.is_new_customer ? 'New' : 'Returning' }}\n- Weekend: {{ $json.is_weekend ? 'Yes' : 'No' }}",
+              "role": "system"
+            },
+            {
+              "content": "=Customer: {{ $('Prepare Enhanced Context').item.json.customer_name }}\n\nConversation History:\n{{ $('Prepare Enhanced Context').item.json.conversation_history }}\n\nCurrent Message:\n{{ $('Prepare Enhanced Context').item.json.current_message }}\n\nRespond concisely:"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 250,
+          "temperature": 0.7
+        }
+      },
+      "id": "generate-ai-response",
+      "name": "Generate AI Response (GPT-4o)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [-2640, -80],
+      "credentials": {
+        "openAiApi": {
+          "id": "vFc3OjZ2fU29BIiw",
+          "name": "OpenAi account"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Extract booking details and return ONLY valid JSON (no markdown, no backticks).\n\nCurrent date: {{ $now.format('YYYY-MM-DD') }}\nCurrent day: {{ $now.format('dddd') }}\n\n**OUTPUT FORMAT:**\n{\n  \"check_in\": \"YYYY-MM-DD or null\",\n  \"check_out\": \"YYYY-MM-DD or null\",\n  \"guests\": number or null,\n  \"room_type\": \"cliff_valley\" or \"valley_view\" or \"garden_view\" or null,\n  \"special_requests\": \"string or null\",\n  \"missing_info\": [],\n  \"confidence\": 0.0 to 1.0\n}\n\n**DATE PARSING:**\n- \"next weekend\" → next Sat/Sun\n- \"this weekend\" → upcoming Sat/Sun  \n- \"15th\" → infer month based on context\n- \"Dec 25\" → 2024-12-25 (or 2025 if passed)\n- \"tomorrow\" → tomorrow's date\n- \"in 3 days\" → calculate date\n\n**GUESTS:**\n- \"2 people\" → 2\n- \"family of 4\" → 4\n- \"couple\" → 2\n- If not mentioned → null\n\n**ROOM TYPE:**\n- \"Cliff\" / \"Cliff Valley\" → \"cliff_valley\"\n- \"Valley\" / \"Valley View\" → \"valley_view\"\n- \"Garden\" / \"Garden View\" → \"garden_view\"\n- If not mentioned → null\n\n**MISSING INFO:**\nList fields that are null: [\"check_in\", \"check_out\", \"guests\", \"room_type\"]\n\n**CONFIDENCE:**\nRate 0.0-1.0 how confident you are in the extraction.\n\n**IMPORTANT:**\nLook at ENTIRE conversation history to find dates, guests, room preferences mentioned in ANY previous message.",
+              "role": "system"
+            },
+            {
+              "content": "=Full Conversation:\n{{ $('Prepare Enhanced Context').item.json.conversation_history }}\n\nCurrent Message:\n{{ $('Prepare Enhanced Context').item.json.current_message }}\n\nExtract booking details:"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 300,
+          "temperature": 0.1,
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "extract-booking",
+      "name": "Extract Booking (Structured)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [-2640, 240],
+      "credentials": {
+        "openAiApi": {
+          "id": "vFc3OjZ2fU29BIiw",
+          "name": "OpenAi account"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process booking extraction with validation\nconst extractedData = $input.first().json;\nconst contextData = $('Prepare Enhanced Context').first().json;\n\nlet bookingDetails;\ntry {\n  const content = extractedData.message?.content || extractedData.content || '{}';\n  // Remove markdown if present\n  const cleanContent = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  bookingDetails = JSON.parse(cleanContent);\n} catch (error) {\n  bookingDetails = {\n    missing_info: ['check_in', 'check_out', 'guests', 'room_type'],\n    confidence: 0.0,\n    error: error.message\n  };\n}\n\n// Validation\nconst hasAllInfo = (!bookingDetails.missing_info || bookingDetails.missing_info.length === 0);\nconst highConfidence = (bookingDetails.confidence || 0) > 0.7;\n\n// Validate dates if provided\nif (bookingDetails.check_in && bookingDetails.check_out) {\n  const checkIn = new Date(bookingDetails.check_in);\n  const checkOut = new Date(bookingDetails.check_out);\n  const today = new Date();\n  \n  // Validation checks\n  if (checkIn < today) {\n    bookingDetails.validation_errors = bookingDetails.validation_errors || [];\n    bookingDetails.validation_errors.push('Check-in date is in the past');\n  }\n  \n  if (checkOut <= checkIn) {\n    bookingDetails.validation_errors = bookingDetails.validation_errors || [];\n    bookingDetails.validation_errors.push('Check-out must be after check-in');\n  }\n  \n  const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));\n  if (nights > 30) {\n    bookingDetails.validation_errors = bookingDetails.validation_errors || [];\n    bookingDetails.validation_errors.push('Maximum stay is 30 nights');\n  }\n  \n  bookingDetails.nights = nights;\n}\n\n// Validate guest count\nif (bookingDetails.guests && (bookingDetails.guests < 1 || bookingDetails.guests > 20)) {\n  bookingDetails.validation_errors = bookingDetails.validation_errors || [];\n  bookingDetails.validation_errors.push('Guest count must be between 1 and 20');\n}\n\nconst roomNames = {\n  'cliff_valley': 'Cliff Valley View',\n  'valley_view': 'Valley View',\n  'garden_view': 'Garden View'\n};\n\nlet responseMessage = '';\n\n// Check if we should proceed to handoff\nconst readyForHandoff = hasAllInfo && \n                        highConfidence && \n                        (!bookingDetails.validation_errors || bookingDetails.validation_errors.length === 0);\n\nif (!readyForHandoff) {\n  // Generate response asking for missing info\n  const hasDates = !!(bookingDetails.check_in && bookingDetails.check_out);\n  const hasGuests = bookingDetails.guests !== null && bookingDetails.guests !== undefined;\n  const hasRoom = bookingDetails.room_type !== null && bookingDetails.room_type !== undefined;\n  \n  if (bookingDetails.validation_errors && bookingDetails.validation_errors.length > 0) {\n    responseMessage = `I notice an issue with the dates: ${bookingDetails.validation_errors.join(', ')}. `;\n    responseMessage += 'Could you please provide the correct dates?';\n  } else if (hasRoom && hasGuests && !hasDates) {\n    responseMessage = `Perfect! ${roomNames[bookingDetails.room_type]} for ${bookingDetails.guests} guests. 🏔️\\n\\n`;\n    responseMessage += 'To check availability and pricing, I just need your check-in and check-out dates.\\n\\nWhen would you like to visit?';\n  } else if (hasRoom && hasGuests && hasDates) {\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Great! ${roomNames[bookingDetails.room_type]} for ${bookingDetails.guests} guests from ${checkIn} to ${checkOut}.\\n\\nLet me connect you with our booking manager!`;\n  } else if (hasDates && hasGuests && !hasRoom) {\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Perfect! ${checkIn} to ${checkOut} for ${bookingDetails.guests} guests. ✨\\n\\nWhich cottage would you prefer?\\n\\n🏔️ Cliff Valley View (premium)\\n🌿 Valley View\\n🌺 Garden View`;\n  } else if (hasDates && !hasGuests && !hasRoom) {\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Great! ${checkIn} to ${checkOut}. 📅\\n\\nTo provide accurate pricing:\\n\\n👥 How many guests?\\n🏡 Preferred room type?`;\n  } else {\n    responseMessage = \"I'd be happy to help with booking! 🏔️\\n\\nTo check availability and pricing, I need:\\n\\n📅 Check-in and check-out dates\\n👥 Number of guests\\n🏡 Preferred room type\\n\\nCould you share these details?\";\n  }\n  \n  return {\n    json: {\n      lead_id: contextData.lead_id,\n      phone_number: contextData.phone_number,\n      customer_name: contextData.customer_name,\n      response_message: responseMessage,\n      complete_info: false,\n      booking_details: bookingDetails,\n      needs_more_info: true,\n      confidence: bookingDetails.confidence\n    }\n  };\n  \n} else {\n  // Ready for handoff - complete info\n  const checkIn = new Date(bookingDetails.check_in);\n  const checkOut = new Date(bookingDetails.check_out);\n  const nights = bookingDetails.nights;\n  \n  responseMessage = \"Excellent! I have all the details. ✨\\n\\n\";\n  responseMessage += \"Our booking manager is checking availability for:\\n\\n\";\n  responseMessage += `📅 ${checkIn.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} → ${checkOut.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} (${nights} night${nights > 1 ? 's' : ''})\\n`;\n  responseMessage += `👥 ${bookingDetails.guests} guest${bookingDetails.guests > 1 ? 's' : ''}\\n`;\n  responseMessage += `🏡 ${roomNames[bookingDetails.room_type]}\\n`;\n  \n  if (bookingDetails.special_requests) {\n    responseMessage += `💝 ${bookingDetails.special_requests}\\n`;\n  }\n  \n  responseMessage += \"\\n━━━━━━━━━━━━━━━\\n\\n\";\n  responseMessage += \"You'll receive a WhatsApp from our manager within 15 minutes with:\\n\";\n  responseMessage += \"✓ Availability confirmation\\n\";\n  responseMessage += \"✓ Best rates\\n\";\n  responseMessage += \"✓ Payment details\\n\\n\";\n  responseMessage += \"Any other questions about Gurusparsh? 🌿\";\n  \n  return {\n    json: {\n      lead_id: contextData.lead_id,\n      phone_number: contextData.phone_number,\n      customer_name: contextData.customer_name,\n      response_message: responseMessage,\n      complete_info: true,\n      booking_details: bookingDetails,\n      needs_more_info: false,\n      confidence: bookingDetails.confidence,\n      \n      // Formatted for database\n      check_in_date: bookingDetails.check_in,\n      check_out_date: bookingDetails.check_out,\n      number_of_guests: bookingDetails.guests,\n      room_type: bookingDetails.room_type,\n      special_requests: bookingDetails.special_requests,\n      nights: nights,\n      raw_request: contextData.current_message\n    }\n  };\n}"
+      },
+      "id": "process-booking",
+      "name": "Process Booking Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2400, 240]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false
+          },
+          "conditions": [
+            {
+              "id": "complete-check",
+              "leftValue": "={{ $json.complete_info }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
+      },
+      "id": "check-complete",
+      "name": "Has Complete Booking Info?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-2160, 240]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO booking_requests (\n  lead_id,\n  phone_number,\n  customer_name,\n  check_in_date,\n  check_out_date,\n  number_of_guests,\n  room_type,\n  special_requests,\n  raw_request,\n  status,\n  confidence_score,\n  nights,\n  created_at,\n  owner_notified_at\n) VALUES (\n  '{{ $json.lead_id }}',\n  '{{ $json.phone_number }}',\n  '{{ $json.customer_name }}',\n  '{{ $json.check_in_date }}',\n  '{{ $json.check_out_date }}',\n  {{ $json.number_of_guests }},\n  '{{ $json.room_type }}',\n  {{ $json.special_requests ? \"'\" + $json.special_requests + \"'\" : \"NULL\" }},\n  '{{ $json.raw_request }}',\n  'pending',\n  {{ $json.confidence }},\n  {{ $json.nights }},\n  NOW(),\n  NOW()\n) RETURNING *;"
+      },
+      "id": "save-booking",
+      "name": "Save Booking Request",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-1920, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format notification for owner\nconst bookingData = $('Process Booking Response').first().json;\n\nlet dateString = '';\nif (bookingData.check_in_date && bookingData.check_out_date) {\n  const checkIn = new Date(bookingData.check_in_date);\n  const checkOut = new Date(bookingData.check_out_date);\n  \n  dateString = `${checkIn.toLocaleDateString('en-IN', { \n    weekday: 'short', \n    month: 'short', \n    day: 'numeric',\n    year: 'numeric'\n  })} → ${checkOut.toLocaleDateString('en-IN', { \n    weekday: 'short', \n    month: 'short', \n    day: 'numeric',\n    year: 'numeric'\n  })} (${bookingData.nights} night${bookingData.nights > 1 ? 's' : ''})`;\n}\n\nconst roomNames = {\n  'cliff_valley': 'Cliff Valley View',\n  'valley_view': 'Valley View',\n  'garden_view': 'Garden View'\n};\n\nconst roomString = roomNames[bookingData.room_type] || 'Not specified';\n\n// Calculate priority score\nlet priorityScore = 0;\nif (bookingData.confidence >= 0.9) priorityScore += 3;\nelse if (bookingData.confidence >= 0.7) priorityScore += 2;\nelse priorityScore += 1;\n\nif (bookingData.nights >= 7) priorityScore += 2;\nelse if (bookingData.nights >= 3) priorityScore += 1;\n\nif (bookingData.number_of_guests >= 6) priorityScore += 1;\n\nconst priorityEmoji = priorityScore >= 5 ? '🔴 HIGH' : priorityScore >= 3 ? '🟡 MEDIUM' : '🟢 NORMAL';\n\nconst message = `🏨 NEW BOOKING REQUEST\n${priorityEmoji} PRIORITY\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n👤 CUSTOMER DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━\nName: ${bookingData.customer_name}\nPhone: ${bookingData.phone_number}\nConfidence: ${Math.round(bookingData.confidence * 100)}%\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n📋 BOOKING DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━\n📅 Dates: ${dateString}\n👥 Guests: ${bookingData.number_of_guests}\n🏡 Room: ${roomString}\n${bookingData.special_requests ? `💝 Special: ${bookingData.special_requests}\\n` : ''}━━━━━━━━━━━━━━━━━━━━━━━━\n💬 ORIGINAL MESSAGE\n━━━━━━━━━━━━━━━━━━━━━━━━\n\"${bookingData.raw_request}\"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n⚡ ACTION REQUIRED\n━━━━━━━━━━━━━━━━━━━━━━━━\n• Customer expects response in 15 min\n• They're expecting \"booking manager\"\n• Time: ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}\n\n👉 Reply via WhatsApp: ${bookingData.phone_number}\n\n🔗 Direct Link: https://wa.me/${bookingData.phone_number.replace(/\\D/g, '')}`;\n\nconst ownerPhone = $env.OWNER_WHATSAPP || '919762767017';\nconst whatsappToken = $env.WHATSAPP_ACCESS_TOKEN || 'EAALpNygKnZAABPZCjen6X6pS5EWyO1mSCa7I6inyJwRM6oXF1bEn3Hzinram3W9e0QWMNSmaxtICpoZAhYp3dLtG4wGZCRMHGYke2ps6Rks9ZBD8dlEd7p6vlUSnDiWZB0yrU5o6MwjtpN9tZA95nX36tSZCQ1jODTEK4wxmpo1RG0N2agZABJLHXnQNlIfIv6qbsiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH';\nconst phoneNumberId = $env.WHATSAPP_PHONE_NUMBER_ID || '891928394004503';\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    to: ownerPhone,\n    text: {\n      body: message\n    },\n    _meta: {\n      phone_number_id: phoneNumberId,\n      access_token: whatsappToken,\n      priority_score: priorityScore\n    }\n  }\n};"
+      },
+      "id": "format-owner-notification",
+      "name": "Format Owner Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1680, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://graph.facebook.com/v18.0/' + $json._meta.phone_number_id + '/messages' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json._meta.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: $json.messaging_product, to: $json.to, text: $json.text } }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "notify-owner",
+      "name": "Notify Owner (WhatsApp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1440, 400],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {},
+      "id": "merge-paths",
+      "name": "Merge Response Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [-2160, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversations (\n  lead_id,\n  message,\n  sender,\n  message_type,\n  timestamp\n) VALUES (\n  '{{ $('Prepare Enhanced Context').item.json.lead_id }}',\n  '{{ $('Prepare Enhanced Context').item.json.current_message }}',\n  'customer',\n  '{{ $('Prepare Enhanced Context').item.json.message_type }}',\n  NOW()\n) RETURNING *;"
+      },
+      "id": "save-customer-msg",
+      "name": "Save Customer Message",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-1920, 0],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine final AI response from either path\nconst contextData = $('Prepare Enhanced Context').first().json;\n\nlet aiResponseText = '';\nlet responseSource = 'unknown';\n\n// Try to get response from info path\ntry {\n  const aiResponse = $('Generate AI Response (GPT-4o)').first()?.json;\n  if (aiResponse && (aiResponse.message?.content || aiResponse.content)) {\n    aiResponseText = aiResponse.message?.content || aiResponse.content;\n    responseSource = 'ai_info';\n  }\n} catch (e) {\n  // Not from info path\n}\n\n// If not found, try handoff path\nif (!aiResponseText) {\n  try {\n    const handoffResponse = $('Process Booking Response').first()?.json;\n    if (handoffResponse && handoffResponse.response_message) {\n      aiResponseText = handoffResponse.response_message;\n      responseSource = 'booking_handler';\n    }\n  } catch (e) {\n    // Not from handoff path\n  }\n}\n\n// Fallback response\nif (!aiResponseText) {\n  if (!contextData.is_business_hours) {\n    aiResponseText = \"Thank you for contacting Gurusparsh Resort! 🏔️\\n\\nOur team will respond first thing in the morning (9 AM IST).\\n\\nMeanwhile, explore our virtual tour: https://www.google.com/maps/@17.9119095,73.7674425,3a,75y\";\n    responseSource = 'after_hours_fallback';\n  } else {\n    aiResponseText = \"Thank you for your message! Our team will assist you shortly.\\n\\nGurusparsh Resort\\n📞 +91 7972532018\";\n    responseSource = 'generic_fallback';\n  }\n}\n\nreturn {\n  json: {\n    lead_id: contextData.lead_id,\n    phone_number: contextData.phone_number,\n    message: aiResponseText,\n    sender: 'ai',\n    timestamp: new Date().toISOString(),\n    response_source: responseSource\n  }\n};"
+      },
+      "id": "determine-response",
+      "name": "Determine Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1680, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversations (\n  lead_id,\n  message,\n  sender,\n  message_type,\n  timestamp,\n  metadata\n) VALUES (\n  '{{ $json.lead_id }}',\n  '{{ $json.message }}',\n  'ai',\n  'text',\n  NOW(),\n  '{{ JSON.stringify({ source: $json.response_source }) }}'\n) RETURNING *;"
+      },
+      "id": "save-ai-response",
+      "name": "Save AI Response",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-1440, 0],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format WhatsApp message with proper structure\nconst responseData = $('Determine Final Response').first().json;\nconst contextData = $('Prepare Enhanced Context').first().json;\n\nconst phoneNumberId = $env.WHATSAPP_PHONE_NUMBER_ID || '891928394004503';\nconst accessToken = $env.WHATSAPP_ACCESS_TOKEN || 'EAALpNygKnZAABPZCjen6X6pS5EWyO1mSCa7I6inyJwRM6oXF1bEn3Hzinram3W9e0QWMNSmaxtICpoZAhYp3dLtG4wGZCRMHGYke2ps6Rks9ZBD8dlEd7p6vlUSnDiWZB0yrU5o6MwjtpN9tZA95nX36tSZCQ1jODTEK4wxmpo1RG0N2agZABJLHXnQNlIfIv6qbsiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH';\n\n// Truncate if too long (WhatsApp limit is 4096 chars)\nlet messageText = responseData.message;\nif (messageText.length > 4000) {\n  messageText = messageText.substring(0, 3997) + '...';\n}\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    recipient_type: \"individual\",\n    to: contextData.phone_number,\n    type: \"text\",\n    text: {\n      preview_url: true,\n      body: messageText\n    },\n    _meta: {\n      phone_number_id: phoneNumberId,\n      access_token: accessToken\n    }\n  }\n};"
+      },
+      "id": "format-whatsapp",
+      "name": "Format WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1200, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://graph.facebook.com/v18.0/' + $json._meta.phone_number_id + '/messages' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json._meta.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { messaging_product: $json.messaging_product, recipient_type: $json.recipient_type, to: $json.to, type: $json.type, text: $json.text } }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-whatsapp",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-960, 0],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log analytics/metrics\nconst sendResult = $input.first().json;\nconst contextData = $('Prepare Enhanced Context').first().json;\nconst responseData = $('Determine Final Response').first().json;\n\nconst success = !sendResult.error;\nconst latency = Date.now() - new Date(contextData.current_time).getTime();\n\n// In production, send to analytics service (Mixpanel, Segment, etc.)\nconst analyticsEvent = {\n  event_type: 'message_sent',\n  timestamp: new Date().toISOString(),\n  success: success,\n  latency_ms: latency,\n  phone_number: contextData.phone_number,\n  customer_type: contextData.is_new_customer ? 'new' : 'returning',\n  message_type: contextData.message_type,\n  response_source: responseData.response_source,\n  conversation_length: contextData.conversation_count,\n  business_hours: contextData.is_business_hours,\n  spam_detected: contextData.spam_detected,\n  rate_limited: contextData.rate_limited\n};\n\nconsole.log('Analytics:', JSON.stringify(analyticsEvent, null, 2));\n\nreturn { json: analyticsEvent };"
+      },
+      "id": "log-analytics",
+      "name": "Log Analytics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'success', timestamp: $now.toISO() } }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-480, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.challenge || 'OK' }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-verification",
+      "name": "Respond Verification",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-4320, -160]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Skipped",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-skip",
+      "name": "Respond Skip",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-4080, -80]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handler - log and notify\nconst error = $input.first().json;\n\nconsole.error('Workflow Error:', error);\n\n// In production, send to error tracking (Sentry, etc.)\nconst errorLog = {\n  timestamp: new Date().toISOString(),\n  error_type: error.error_type || 'unknown',\n  message: error.message || error.details,\n  stack: error.stack,\n  context: {\n    phone: error.phone_number,\n    message: error.message_text\n  }\n};\n\nreturn {\n  json: {\n    error: true,\n    logged: true,\n    ...errorLog\n  }\n};"
+      },
+      "id": "error-handler",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4080, 240]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Error logged",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "respond-error",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-3840, 240]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [[{ "node": "Extract & Validate Message", "type": "main", "index": 0 }]]
+    },
+    "Extract & Validate Message": {
+      "main": [[{ "node": "Should Process?", "type": "main", "index": 0 }]]
+    },
+    "Should Process?": {
+      "main": [
+        [{ "node": "Rate Limit & Spam Check", "type": "main", "index": 0 }],
+        [
+          { "node": "Respond Skip", "type": "main", "index": 0 },
+          { "node": "Error Handler", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Rate Limit & Spam Check": {
+      "main": [[{ "node": "Upsert Lead", "type": "main", "index": 0 }]]
+    },
+    "Upsert Lead": {
+      "main": [[{ "node": "Get Conversation History", "type": "main", "index": 0 }]]
+    },
+    "Get Conversation History": {
+      "main": [[{ "node": "Prepare Enhanced Context", "type": "main", "index": 0 }]]
+    },
+    "Prepare Enhanced Context": {
+      "main": [[{ "node": "Classify Intent (GPT-4o)", "type": "main", "index": 0 }]]
+    },
+    "Classify Intent (GPT-4o)": {
+      "main": [[{ "node": "Route by Intent", "type": "main", "index": 0 }]]
+    },
+    "Route by Intent": {
+      "main": [
+        [{ "node": "Extract Booking (Structured)", "type": "main", "index": 0 }],
+        [{ "node": "Generate AI Response (GPT-4o)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Generate AI Response (GPT-4o)": {
+      "main": [[{ "node": "Merge Response Paths", "type": "main", "index": 0 }]]
+    },
+    "Extract Booking (Structured)": {
+      "main": [[{ "node": "Process Booking Response", "type": "main", "index": 0 }]]
+    },
+    "Process Booking Response": {
+      "main": [[{ "node": "Has Complete Booking Info?", "type": "main", "index": 0 }]]
+    },
+    "Has Complete Booking Info?": {
+      "main": [
+        [{ "node": "Save Booking Request", "type": "main", "index": 0 }],
+        [{ "node": "Merge Response Paths", "type": "main", "index": 1 }]
+      ]
+    },
+    "Save Booking Request": {
+      "main": [[{ "node": "Format Owner Notification", "type": "main", "index": 0 }]]
+    },
+    "Format Owner Notification": {
+      "main": [[{ "node": "Notify Owner (WhatsApp)", "type": "main", "index": 0 }]]
+    },
+    "Notify Owner (WhatsApp)": {
+      "main": [[{ "node": "Merge Response Paths", "type": "main", "index": 2 }]]
+    },
+    "Merge Response Paths": {
+      "main": [[{ "node": "Save Customer Message", "type": "main", "index": 0 }]]
+    },
+    "Save Customer Message": {
+      "main": [[{ "node": "Determine Final Response", "type": "main", "index": 0 }]]
+    },
+    "Determine Final Response": {
+      "main": [[{ "node": "Save AI Response", "type": "main", "index": 0 }]]
+    },
+    "Save AI Response": {
+      "main": [[{ "node": "Format WhatsApp Message", "type": "main", "index": 0 }]]
+    },
+    "Format WhatsApp Message": {
+      "main": [[{ "node": "Send WhatsApp Message", "type": "main", "index": 0 }]]
+    },
+    "Send WhatsApp Message": {
+      "main": [[{ "node": "Log Analytics", "type": "main", "index": 0 }]]
+    },
+    "Log Analytics": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Error Handler": {
+      "main": [[{ "node": "Respond Error", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "versionId": "",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "optimized-gurusparsh-v2"
+  },
+  "id": "",
+  "tags": ["whatsapp", "booking", "resort", "ai-chatbot", "optimized"]
+}
