@@ -272,6 +272,7 @@
     },
     {
       "parameters": {
+        "operation": "create",
         "tableId": "booking_requests",
         "fieldsUi": {
           "fieldValues": [
@@ -395,6 +396,7 @@
     },
     {
       "parameters": {
+        "operation": "create",
         "tableId": "conversations",
         "fieldsUi": {
           "fieldValues": [
@@ -447,6 +449,7 @@
     },
     {
       "parameters": {
+        "operation": "create",
         "tableId": "conversations",
         "fieldsUi": {
           "fieldValues": [
@@ -651,6 +654,7 @@
     },
     {
       "parameters": {
+        "operation": "create",
         "tableId": "leads",
         "fieldsUi": {
           "fieldValues": [
