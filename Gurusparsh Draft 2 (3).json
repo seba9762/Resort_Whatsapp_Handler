@@ -1,0 +1,1058 @@
+{
+  "name": "Gurusparsh Draft 2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhookguru",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "5f2a7be1-eb78-4699-905b-3e59a2e03c4b",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        -4320,
+        -160
+      ],
+      "webhookId": "webhook-guru-v2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body || $input.item.json;\n\ntry {\n  if (!body.entry || !body.entry[0]) {\n    return { json: { skip: true, reason: 'Not a message webhook' } };\n  }\n  \n  const entry = body.entry[0];\n  const changes = entry.changes[0];\n  const value = changes.value;\n  const messages = value.messages || [];\n  const contacts = value.contacts || [];\n  \n  if (messages.length === 0) {\n    return { json: { skip: true, reason: 'No messages in webhook' } };\n  }\n  \n  const message = messages[0];\n  const contact = contacts[0] || {};\n  \n  let messageText = '';\n  if (message.type === 'text' && message.text) {\n    messageText = message.text.body;\n  } else if (message.type === 'button' && message.button) {\n    messageText = message.button.text;\n  } else {\n    messageText = `[${message.type} message]`;\n  }\n  \n  return {\n    json: {\n      phone_number: message.from,\n      message_text: messageText,\n      sender_name: contact.profile?.name || 'Guest',\n      message_id: message.id,\n      timestamp: new Date().toISOString()\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      error: true,\n      message: 'Failed to parse webhook',\n      details: error.message\n    }\n  };\n}"
+      },
+      "id": "ad09dc5f-2b10-4b0e-89d0-ab327ac6efe0",
+      "name": "Extract Message Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4096,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "conversations",
+        "limit": 5,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lead_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        }
+      },
+      "id": "60a784e2-3ecb-4ea6-9bad-1693d0cfe46f",
+      "name": "Get Recent Messages",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -2816,
+        -176
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get lead data from the pass-through Code node\nconst leadData = $('Code').first().json;\nconst conversations = $input.all();\nconst messageData = $('Extract Message Data').first().json;\n\n// Format conversation history (last 5 messages)\nlet conversationHistory = '';\nif (conversations.length > 0) {\n  conversationHistory = conversations\n    .reverse() // Oldest first for context\n    .map(c => {\n      const sender = c.json.sender === 'customer' ? 'Customer' : \n                     c.json.sender === 'owner' ? 'Manager' : 'AI';\n      return `${sender}: ${c.json.message}`;\n    })\n    .join('\\n');\n} else {\n  conversationHistory = '[This is the first message from this customer]';\n}\n\nconst currentMessage = messageData.message_text;\n\nreturn {\n  json: {\n    // IDs\n    lead_id: leadData.id,\n    phone_number: leadData.phone_number,\n    \n    // Customer info\n    customer_name: leadData.name || 'Guest',\n    \n    // Messages\n    current_message: currentMessage,\n    conversation_history: conversationHistory,\n    message_count: conversations.length,\n    \n    // Context flags\n    is_new_customer: conversations.length === 0,\n    \n    // Full data for downstream\n    lead_data: leadData\n  }\n};\n"
+      },
+      "id": "b8255b02-528f-4433-9012-8f6d550ff255",
+      "name": "Prepare Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2656,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4.1-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an intent classifier for a resort booking assistant.\n\nHANDOFF if:\n- Customer asks about PRICE for specific dates (e.g., \"price for Dec 12-15\")\n- Customer asks about AVAILABILITY for specific dates\n- Customer mentions booking/reservation\n- Customer says \"I want to book\" AND has provided ALL details (dates, guests, room)\n- Customer explicitly asks to speak with manager/owner\n- Customer has a complaint\n\nGENERAL INFO if:\n- Customer is answering AI's questions (providing dates, guests, room type)\n- Customer is asking about rooms, facilities, activities\n- Customer is having a conversation and providing details piece by piece\n\nCRITICAL: If AI just asked a question and customer is answering → INFO (not HANDOFF)\n\nRespond ONLY: \"HANDOFF\" or \"INFO\"",
+              "role": "system"
+            },
+            {
+              "content": "=Conversation History:\n{{ $json.conversation_history }}\n\nCurrent Message:\n{{ $json.current_message }}\n\nClassification:"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 10,
+          "temperature": 0.3
+        }
+      },
+      "id": "ada1fa01-59d7-4c87-bedb-e4a0862a9a4f",
+      "name": "Classify Intent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [
+        -2480,
+        -176
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "vFc3OjZ2fU29BIiw",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "handoff-condition",
+              "leftValue": "={{ $json.message.content }}",
+              "rightValue": "HANDOFF",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e87d5372-90bc-4041-b139-67c0e94375c6",
+      "name": "IF Needs Handoff",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2208,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are the AI receptionist for Gurusparsh Resort in Mahabaleshwar, India. Your role is to help potential guests with inquiries and provide information.\n\nGREETING RESPONSE (when customer says hi/hello for first time):\n\"Hello! 👋 Welcome to Gurusparsh Resort - your luxury escape in Mahabaleshwar! 🏔️✨\n\nWe're nestled in the beautiful Mahabaleshwar Valley, offering:\n🏡 Three types of luxury wooden cottages with stunning views\n💧 Private pristine waterfall right on property\n🏊 Crystal-clear swimming pool with 360° mountain views\n🍽️ Authentic Maharashtrian cuisine at Sakhatrupti Restaurant\n🥾 Adventure activities from forest treks to stargazing\n\nTake a virtual tour:\n📸 Resort Tour: https://www.google.com/maps/@17.9119095,73.7674425,3a,75y\n📷 Instagram: @gurusparsh\n🗺️ Location: https://goo.gl/maps/4FUAJin8ULtwvDY87\n\nHow can I help you plan your perfect Mahabaleshwar getaway? Would you like to know about our rooms, activities, or make a booking?\"\n\nRESORT INFORMATION:\n\nRoom Types:\n1. Cliff Valley View Cottages - Premium, valley-edge floating balcony, breathtaking views, king bed\n2. Valley View Cottages - Wooden paneling, private garden, valley views, king bed\n3. Garden View Cottage - Open garden, strawberry plantation views, king bed\n\nFacilities:\n- Sakhatrupti Restaurant: Authentic Maharashtrian home-made food\n- Swimming Pool: Crystal-clear with 360° mountain views\n- In-room Spa services (professional massage)\n- Library with book collection\n- Private Waterfall right on property\n\nActivities & Pricing:\n- Morning forest trek + breakfast: ₹700/person\n- Jungle safari to sunset point: ₹300/person\n- Stargazing from plateau: ₹400/person\n- Natural fish therapy at Bhilar waterfall: Complimentary\n- BBQ arrangement: ₹850\n- Bonfire: ₹350\n\nContact:\n- Reception: +91 7972532018\n- Location: Mahabaleshwar Valley, Maharashtra\n- Maps: https://goo.gl/maps/4FUAJin8ULtwvDY87\n- Instagram: @gurusparsh\n\nPhoto Galleries:\n- Virtual Tour: https://www.google.com/maps/@17.9119095,73.7674425,3a,75y\n- Cliff Valley: https://photos.app.goo.gl/5C9AKJ375wQKJFt56\n- Valley View: https://photos.app.goo.gl/dtef53GMEAYjW1ReA\n- Garden View: https://photos.app.goo.gl/wVgVZgzHEQcKJbee9\n- Pool: https://photos.app.goo.gl/QW9qi8fSiNHaB8UB9\n- Activities: https://photos.app.goo.gl/QA8c7eP9P7MdrKCs9\n\nYOUR COMMUNICATION STYLE:\n- Warm, friendly, and concise (2-3 sentences typically)\n- Use emojis sparingly: 🏔️🌿✨ only\n- Answer questions directly\n- Share relevant photo links when discussing rooms/facilities\n- If asked about booking/availability → This should already be caught by classifier, but if it happens, say: \"Let me connect you with our booking manager for that!\"\n\nIMPORTANT:\n- NEVER make up availability information\n- NEVER quote prices for specific dates (those need human confirmation)\n- Focus on providing helpful information\n- Encourage them to book when appropriate\n\nCurrent date: {{ $now.format('YYYY-MM-DD') }}\n\nCRITICAL - CHECK CONVERSATION HISTORY FIRST:\n- Before asking for dates, check if customer already mentioned them\n- Before asking for guests, check if already mentioned\n- Before asking for room type, check if already mentioned\n- Acknowledge what they've already told you\n\nExample:\nIf history shows \"Dec 13-15 for 4 people\":\n✅ Say: \"Perfect! I have Dec 13-15 for 4 guests. Which room type?\"\n❌ DON'T say: \"I need your dates and guest count!\"",
+              "role": "system"
+            },
+            {
+              "content": "=Customer Name: {{ $('Prepare Context').item.json.customer_name }}\n\nConversation History:\n{{ $('Prepare Context').item.json.conversation_history }}\n\nCurrent Message:\n{{ $('Prepare Context').item.json.current_message }}\n\n"
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 300,
+          "temperature": 0.7
+        }
+      },
+      "id": "c8b18d44-cf95-4d90-ad5c-c54582190f1a",
+      "name": "Generate AI Response",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [
+        -1984,
+        -352
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "vFc3OjZ2fU29BIiw",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Extract booking details from the customer's message and return ONLY a valid JSON object.\n\nCurrent date: {{ $now.format('YYYY-MM-DD') }}\nCurrent day: {{ $now.format('dddd') }}\n\nOUTPUT FORMAT (return ONLY this JSON, no markdown, no backticks):\n{\n  \"check_in\": \"YYYY-MM-DD or null\",\n  \"check_out\": \"YYYY-MM-DD or null\",\n  \"guests\": number or null,\n  \"room_type\": \"cliff_valley\" or \"valley_view\" or \"garden_view\" or null,\n  \"special_requests\": \"any special mentions\" or null,\n  \"missing_info\": []\n}\n\nFIELD RULES:\n\ncheck_in/check_out:\n- Convert relative dates to actual dates\n- \"next weekend\" → next Saturday/Sunday\n- \"this weekend\" → upcoming Saturday/Sunday\n- \"15th\" → figure out month (Dec 15 or Jan 15 based on context)\n- \"Dec 25\" → 2024-12-25 (or 2025 if that's passed)\n\nguests:\n- \"2 people\" → 2\n- \"family of 4\" → 4\n- \"couple\" → 2\n- If not specified → null\n\nroom_type:\n- \"Cliff Valley\" or \"Cliff\" → \"cliff_valley\"\n- \"Valley View\" or \"Valley\" → \"valley_view\"\n- \"Garden View\" or \"Garden\" → \"garden_view\"\n- If not specified → null\n\nmissing_info:\n- List fields that are missing: [\"check_in\", \"check_out\", \"guests\", \"room_type\"]\n- Only list truly missing fields\n\nIMPORTANT: Look at the ENTIRE conversation history to find:\n- Dates mentioned in ANY previous message (e.g., \"Dec 13 to Dec 15\")\n- Guest count mentioned earlier (e.g., \"4 people\", \"8 guests\")\n- Room preference mentioned earlier (e.g., \"cliff valley\", \"valley view\")\n\nOnly mark as missing if truly not mentioned ANYWHERE in the conversation.",
+              "role": "system"
+            },
+            {
+              "content": "=Full Conversation History:\n{{ $('Prepare Context').item.json.conversation_history }}\n\nCurrent Message:\n{{ $('Prepare Context').item.json.current_message }}\n\nExtract ALL booking details from the ENTIRE conversation above, not just the current message."
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 200,
+          "temperature": 0.2
+        }
+      },
+      "id": "bf3484e2-65c6-4539-aca8-6c112601b893",
+      "name": "Extract Booking Details",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.3,
+      "position": [
+        -1984,
+        16
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "vFc3OjZ2fU29BIiw",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get extracted booking details\nconst extractedData = $input.first().json;\nconst contextData = $('Prepare Context').first().json;\n\nlet bookingDetails;\ntry {\n  // Parse the JSON from OpenAI\n  let content = extractedData.message?.content || extractedData.content || '{}';\n  // Remove markdown if present\n  content = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  bookingDetails = JSON.parse(content);\n} catch (error) {\n  // Fallback if parsing fails\n  bookingDetails = {\n    missing_info: ['check_in', 'check_out', 'guests', 'room_type']\n  };\n}\n\n// Check if we have complete information\nconst hasAllInfo = (!bookingDetails.missing_info || bookingDetails.missing_info.length === 0);\n\nlet responseMessage = '';\n\nif (!hasAllInfo) {\n  // FIXED: Declare all variables at the top with proper names\n  const hasDates = !!(bookingDetails.check_in && bookingDetails.check_out);\n  const hasGuests = bookingDetails.guests !== null && bookingDetails.guests !== undefined;\n  const hasRoom = bookingDetails.room_type !== null && bookingDetails.room_type !== undefined;\n  \n  const roomNames = {\n    'cliff_valley': 'Cliff Valley View',\n    'valley_view': 'Valley View',\n    'garden_view': 'Garden View'\n  };\n  \n  // Build a natural response acknowledging what we have\n  if (hasRoom && hasGuests && !hasDates) {\n    // Has room and guests, needs dates\n    responseMessage = `Great choice on the ${roomNames[bookingDetails.room_type] || bookingDetails.room_type.replace('_', ' ')} cottage for ${bookingDetails.guests} guests! 🏔️\\n\\n`;\n    responseMessage += \"To check availability and get you the best rates, I just need your check-in and check-out dates.\\n\\nWhen are you planning to visit?\";\n  } else if (hasRoom && hasGuests && hasDates) {\n    // Has all three - shouldn't reach here but handle it\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Perfect! You're interested in ${roomNames[bookingDetails.room_type] || bookingDetails.room_type.replace('_', ' ')} for ${bookingDetails.guests} guests from ${checkIn} to ${checkOut}.\\n\\n`;\n    responseMessage += \"Let me connect you with our booking manager!\";\n  } else if (hasRoom && hasDates && !hasGuests) {\n    // Has room and dates, needs guests\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Great! I see you're interested in ${roomNames[bookingDetails.room_type] || bookingDetails.room_type.replace('_', ' ')} from ${checkIn} to ${checkOut}. 🏔️\\n\\n`;\n    responseMessage += \"How many guests will be joining you?\";\n  } else if (hasDates && hasGuests && !hasRoom) {\n    // Has dates and guests, needs room type\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Perfect! ${checkIn} to ${checkOut} for ${bookingDetails.guests} guests. ✨\\n\\n`;\n    responseMessage += \"Which cottage type would you prefer?\\n\\n\";\n    responseMessage += \"🏔️ Cliff Valley View (most premium)\\n\";\n    responseMessage += \"🌿 Valley View\\n\";\n    responseMessage += \"🌺 Garden View\";\n  } else if (hasDates && !hasGuests && !hasRoom) {\n    // Has only dates\n    const checkIn = new Date(bookingDetails.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    const checkOut = new Date(bookingDetails.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });\n    responseMessage = `Great! I have ${checkIn} to ${checkOut}. 📅\\n\\n`;\n    responseMessage += \"To provide you with the best rates, I need:\\n\\n\";\n    responseMessage += \"👥 Number of guests\\n\";\n    responseMessage += \"🏡 Preferred room type:\\n\";\n    responseMessage += \"   • Cliff Valley View\\n\";\n    responseMessage += \"   • Valley View\\n\";\n    responseMessage += \"   • Garden View\";\n  } else if (hasRoom && !hasDates && !hasGuests) {\n    // Has only room type\n    responseMessage = `Excellent choice - the ${roomNames[bookingDetails.room_type] || bookingDetails.room_type.replace('_', ' ')} cottage! 🏔️\\n\\n`;\n    responseMessage += \"To check availability and provide you with accurate pricing, I need:\\n\\n\";\n    responseMessage += \"📅 Check-in and check-out dates\\n\";\n    responseMessage += \"👥 Number of guests\";\n  } else if (hasGuests && !hasDates && !hasRoom) {\n    // Has only guest count\n    responseMessage = `Perfect, ${bookingDetails.guests} guests! 👥\\n\\n`;\n    responseMessage += \"To check pricing and availability, I need:\\n\\n\";\n    responseMessage += \"📅 Your check-in and check-out dates\\n\";\n    responseMessage += \"🏡 Preferred room type:\\n\";\n    responseMessage += \"   • Cliff Valley View (most premium)\\n\";\n    responseMessage += \"   • Valley View\\n\";\n    responseMessage += \"   • Garden View\";\n  } else {\n    // Nothing provided yet - customer just asked about prices\n    responseMessage = \"I'd be happy to help you with room pricing! 🏔️\\n\\n\";\n    responseMessage += \"To provide you with accurate rates and availability, I need:\\n\\n\";\n    responseMessage += \"📅 Check-in and check-out dates\\n\";\n    responseMessage += \"👥 Number of guests\\n\";\n    responseMessage += \"🏡 Preferred room type:\\n\";\n    responseMessage += \"   • Cliff Valley View (most premium)\\n\";\n    responseMessage += \"   • Valley View\\n\";\n    responseMessage += \"   • Garden View\\n\\n\";\n    responseMessage += \"Could you share these details? 😊\";\n  }\n  \n  return {\n    json: {\n      lead_id: contextData.lead_id,\n      phone_number: contextData.phone_number,\n      customer_name: contextData.customer_name,\n      response_message: responseMessage,\n      complete_info: false,\n      booking_details: bookingDetails,\n      needs_more_info: true\n    }\n  };\n  \n} else {\n  // Have complete information - ready for handoff!\n  const checkIn = new Date(bookingDetails.check_in);\n  const checkOut = new Date(bookingDetails.check_out);\n  const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));\n  \n  const roomNames = {\n    'cliff_valley': 'Cliff Valley View',\n    'valley_view': 'Valley View',\n    'garden_view': 'Garden View'\n  };\n  \n  responseMessage = \"Perfect! Thank you for those details. ✨\\n\\n\";\n  responseMessage += \"Our booking manager Suresh is checking availability right now for:\\n\\n\";\n  responseMessage += `📅 ${checkIn.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} to ${checkOut.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} (${nights} night${nights > 1 ? 's' : ''})\\n`;\n  responseMessage += `👥 ${bookingDetails.guests} guest${bookingDetails.guests > 1 ? 's' : ''}\\n`;\n  responseMessage += `🏡 ${roomNames[bookingDetails.room_type]} Cottage\\n`;\n  \n  if (bookingDetails.special_requests) {\n    responseMessage += `💝 Special: ${bookingDetails.special_requests}\\n`;\n  }\n  \n  responseMessage += \"\\n━━━━━━━━━━━━━━━━━━\\n\\n\";\n  responseMessage += \"Suresh will WhatsApp you within 15 minutes with:\\n\";\n  responseMessage += \"✓ Availability confirmation\\n\";\n  responseMessage += \"✓ Best rates for your dates\\n\";\n  responseMessage += \"✓ Payment details\\n\";\n  responseMessage += \"✓ Any special arrangements\\n\\n\";\n  responseMessage += \"Meanwhile, any other questions about Gurusparsh? 🌿\";\n  \n  return {\n    json: {\n      lead_id: contextData.lead_id,\n      phone_number: contextData.phone_number,\n      customer_name: contextData.customer_name,\n      response_message: responseMessage,\n      complete_info: true,\n      booking_details: bookingDetails,\n      needs_more_info: false,\n      \n      // Formatted for database\n      check_in_date: bookingDetails.check_in,\n      check_out_date: bookingDetails.check_out,\n      number_of_guests: bookingDetails.guests,\n      room_type: bookingDetails.room_type,\n      special_requests: bookingDetails.special_requests,\n      raw_request: contextData.current_message\n    }\n  };\n}"
+      },
+      "id": "69853f3c-3016-4049-8263-ed9a301cda31",
+      "name": "Generate Handoff Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1712,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "complete-info-condition",
+              "leftValue": "={{ $json.complete_info }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2d79bf4e-f5f0-4291-ad93-9544e94ca4a0",
+      "name": "IF Complete Info",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1552,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "booking_requests",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "lead_id",
+              "fieldValue": "={{ $json.lead_id }}"
+            },
+            {
+              "fieldId": "phone_number",
+              "fieldValue": "={{ $json.phone_number }}"
+            },
+            {
+              "fieldId": "customer_name",
+              "fieldValue": "={{ $json.customer_name }}"
+            },
+            {
+              "fieldId": "check_in_date",
+              "fieldValue": "={{ $json.check_in_date }}"
+            },
+            {
+              "fieldId": "check_out_date",
+              "fieldValue": "={{ $json.check_out_date }}"
+            },
+            {
+              "fieldId": "number_of_guests",
+              "fieldValue": "={{ $json.number_of_guests }}"
+            },
+            {
+              "fieldId": "room_type",
+              "fieldValue": "={{ $json.room_type }}"
+            },
+            {
+              "fieldId": "special_requests",
+              "fieldValue": "={{ $json.special_requests }}"
+            },
+            {
+              "fieldId": "raw_request",
+              "fieldValue": "={{ $json.raw_request }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "pending"
+            },
+            {
+              "fieldId": "owner_notified_at",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "4ed2fb8a-0788-401b-9c89-d119d8591cbb",
+      "name": "Save Booking Request",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        144
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const handoffData = $('Generate Handoff Response').first().json;\n\n// Format dates nicely\nlet dateString = '';\nif (handoffData.check_in_date && handoffData.check_out_date) {\n  const checkIn = new Date(handoffData.check_in_date);\n  const checkOut = new Date(handoffData.check_out_date);\n  const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));\n  \n  dateString = `${checkIn.toLocaleDateString('en-US', { \n    weekday: 'short', \n    month: 'short', \n    day: 'numeric' \n  })} → ${checkOut.toLocaleDateString('en-US', { \n    weekday: 'short', \n    month: 'short', \n    day: 'numeric' \n  })} (${nights} night${nights > 1 ? 's' : ''})`;\n}\n\n// Format room type\nlet roomString = 'Not specified';\nif (handoffData.room_type) {\n  const roomNames = {\n    'cliff_valley': 'Cliff Valley View',\n    'valley_view': 'Valley View',\n    'garden_view': 'Garden View'\n  };\n  roomString = roomNames[handoffData.room_type] || handoffData.room_type;\n}\n\n// Build the notification message\nconst message = `🏨 BOOKING REQUEST - Gurusparsh Resort\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n👤 CUSTOMER\n━━━━━━━━━━━━━━━━━━━━━━━━\nName: ${handoffData.customer_name}\nPhone: ${handoffData.phone_number}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n📋 BOOKING DETAILS\n━━━━━━━━━━━━━━━━━━━━━━━━\n📅 Dates: ${dateString}\n👥 Guests: ${handoffData.number_of_guests || 'Not specified'}\n🏡 Room: ${roomString}\n${handoffData.special_requests ? `💝 Special: ${handoffData.special_requests}\\n` : ''}\n━━━━━━━━━━━━━━━━━━━━━━━━\n💬 ORIGINAL MESSAGE\n━━━━━━━━━━━━━━━━━━━━━━━━\n\"${handoffData.raw_request}\"\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n⚡ ACTION REQUIRED\n━━━━━━━━━━━━━━━━━━━━━━━━\n• Customer told: \"Response within 15 minutes\"\n• They expect: \"Booking manager Suresh\"\n• Time: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}\n\n👉 Reply to: ${handoffData.phone_number}`;\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    to: \"919762767017\",\n    text: {\n      body: message\n    }\n  }\n};"
+      },
+      "id": "ea2684c1-4fe6-41f4-b001-4e1df49601c1",
+      "name": "Format Owner Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/891928394004503/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer EAALpNygKnZAABPZCjen6X6pS5EWyO1mSCa7I6inyJwRM6oXF1bEn3Hzinram3W9e0QWMNSmaxtICpoZAhYp3dLtG4wGZCRMHGYke2ps6Rks9ZBD8dlEd7p6vlUSnDiWZB0yrU5o6MwjtpN9tZA95nX36tSZCQ1jODTEK4wxmpo1RG0N2agZABJLHXnQNlIfIv6qbsiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "597ec083-303d-4c3f-a0cd-fbea9e562bda",
+      "name": "Notify Owner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -896,
+        144
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "82d4332e-d776-4763-8696-faf3f3193f0f",
+      "name": "Merge Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        -1712,
+        -160
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "tableId": "conversations",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "lead_id",
+              "fieldValue": "={{ $('Prepare Context').item.json.lead_id }}"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ $('Prepare Context').item.json.current_message }}"
+            },
+            {
+              "fieldId": "sender",
+              "fieldValue": "customer"
+            },
+            {
+              "fieldId": "timestamp",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "69fdca89-bde4-47af-826d-c1001ba12134",
+      "name": "Save Customer Message",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        -176
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine which AI response to save\nconst contextData = $('Prepare Context').first().json;\n\nlet aiResponseText = '';\n\n// Check which path we came from\ntry {\n  const aiResponse = $('Generate AI Response').first()?.json;\n  if (aiResponse && aiResponse.message && aiResponse.message.content) {\n    // Came from general info path\n    aiResponseText = aiResponse.message.content;\n  }\n} catch (e) {\n  // Didn't come from general info path\n}\n\nif (!aiResponseText) {\n  try {\n    const handoffResponse = $('Generate Handoff Response').first()?.json;\n    if (handoffResponse && handoffResponse.response_message) {\n      // Came from handoff path\n      aiResponseText = handoffResponse.response_message;\n    }\n  } catch (e) {\n    // Didn't come from handoff path either\n  }\n}\n\nif (!aiResponseText) {\n  aiResponseText = \"Thank you for contacting Gurusparsh Resort!\";\n}\n\nreturn {\n  json: {\n    lead_id: contextData.lead_id,\n    message: aiResponseText,\n    sender: 'ai',\n    timestamp: new Date().toISOString()\n  }\n};"
+      },
+      "id": "90fbcda1-9b90-4733-ab99-1bce3ca39258",
+      "name": "Determine AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1104,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "conversations",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "lead_id",
+              "fieldValue": "={{ $json.lead_id }}"
+            },
+            {
+              "fieldId": "message",
+              "fieldValue": "={{ $json.message }}"
+            },
+            {
+              "fieldId": "sender",
+              "fieldValue": "ai"
+            },
+            {
+              "fieldId": "timestamp",
+              "fieldValue": "={{ $json.timestamp }}"
+            }
+          ]
+        }
+      },
+      "id": "af83d1f8-cca4-43fa-bbd1-132e3e38f6f4",
+      "name": "Save AI Response",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -896,
+        -176
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const contextData = $('Prepare Context').first().json;\nconst aiResponseData = $('Determine AI Response').first().json;\n\nreturn {\n  json: {\n    messaging_product: \"whatsapp\",\n    to: contextData.phone_number,\n    text: {\n      body: aiResponseData.message\n    }\n  }\n};"
+      },
+      "id": "1e7ce587-8637-4b73-9ff8-c5e5900214e3",
+      "name": "Format WhatsApp Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/891928394004503/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer EAALpNygKnZAABPZCjen6X6pS5EWyO1mSCa7I6inyJwRM6oXF1bEn3Hzinram3W9e0QWMNSmaxtICpoZAhYp3dLtG4wGZCRMHGYke2ps6Rks9ZBD8dlEd7p6vlUSnDiWZB0yrU5o6MwjtpN9tZA95nX36tSZCQ1jODTEK4wxmpo1RG0N2agZABJLHXnQNlIfIv6qbsiypoOYornxNWay0UGX6PVuS4hURZAQ3LYQsvfS6LH"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "25e12f30-d3c8-423c-bf9d-64ff01b1c432",
+      "name": "Send WhatsApp Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -448,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": {}
+      },
+      "id": "ff5c9ef6-3994-487c-82e5-3b84d758a18e",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -224,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "leads",
+        "limit": 1,
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "phone_number",
+              "condition": "eq",
+              "keyValue": "={{ $json.phone_number }}"
+            }
+          ]
+        }
+      },
+      "id": "839277d5-0feb-4367-8182-d26aa2e06343",
+      "name": "Check Lead Exists",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -3792,
+        -160
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "lead-exists-condition",
+              "leftValue": "={{ $('Check Lead Exists').first().json.id !== undefined && $('Check Lead Exists').first().json.id !== null }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dcb3eddb-0dc3-46ed-acce-b6be40bf90a7",
+      "name": "IF Lead Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -3568,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "leads",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $('Check Lead Exists').first().json.id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $('Extract Message Data').item.json.sender_name }}"
+            },
+            {
+              "fieldId": "last_contact",
+              "fieldValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "81a18e06-9d9a-4f27-b995-3b289c809f20",
+      "name": "Update Existing Lead",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -3344,
+        -288
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "leads",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "phone_number",
+              "fieldValue": "={{ $('Extract Message Data').item.json.phone_number }}"
+            },
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $('Extract Message Data').item.json.sender_name }}"
+            },
+            {
+              "fieldId": "last_contact",
+              "fieldValue": "={{ $now.toISO() }}"
+            },
+            {
+              "fieldId": "lead_status",
+              "fieldValue": "new"
+            }
+          ]
+        }
+      },
+      "id": "ba876b8e-210f-4131-80e7-3c1ad93a1f11",
+      "name": "Create New Lead",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -3344,
+        -48
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "gBNmoPaFTLYRnH2m",
+          "name": "Guru"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Simply pass through whichever data we received\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3088,
+        -112
+      ],
+      "id": "d495cb31-97fa-442a-86c7-c1b8553129f5",
+      "name": "Code"
+    }
+  ],
+  "pinData": {
+    "WhatsApp Webhook": [
+      {
+        "json": {
+          "headers": {
+            "host": "n8nakki.dedyn.io:5678",
+            "accept": "*/*",
+            "accept-encoding": "deflate, gzip",
+            "user-agent": "facebookexternalua",
+            "content-type": "application/json",
+            "x-hub-signature": "sha1=0a7f2733f5a76120016bfa923dd78887252230a9",
+            "x-hub-signature-256": "sha256=522e04d259cfa17764fd392f12c3ce7980d4615d2a68fe524e9ed3abdfd32684",
+            "content-length": "492"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "object": "whatsapp_business_account",
+            "entry": [
+              {
+                "id": "1125922475975656",
+                "changes": [
+                  {
+                    "value": {
+                      "messaging_product": "whatsapp",
+                      "metadata": {
+                        "display_phone_number": "15551615445",
+                        "phone_number_id": "891928394004503"
+                      },
+                      "contacts": [
+                        {
+                          "profile": {
+                            "name": "Akki"
+                          },
+                          "wa_id": "919762767017"
+                        }
+                      ],
+                      "messages": [
+                        {
+                          "from": "919762767017",
+                          "id": "wamid.HBgMOTE5NzYyNzY3MDE3FQIAEhggQUMxNEE0NjU1RURGRjU3NzFGRTc5QjMzRkFDQjVCRTkA",
+                          "timestamp": "1762766237",
+                          "text": {
+                            "body": "Room prices ?"
+                          },
+                          "type": "text"
+                        }
+                      ]
+                    },
+                    "field": "messages"
+                  }
+                ]
+              }
+            ]
+          },
+          "webhookUrl": "https://n8nakki.dedyn.io:5678/webhook/whatsapp-webhookguru",
+          "executionMode": "production"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Message Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Message Data": {
+      "main": [
+        [
+          {
+            "node": "Check Lead Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Recent Messages": {
+      "main": [
+        [
+          {
+            "node": "Prepare Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Context": {
+      "main": [
+        [
+          {
+            "node": "Classify Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Intent": {
+      "main": [
+        [
+          {
+            "node": "IF Needs Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Needs Handoff": {
+      "main": [
+        [
+          {
+            "node": "Extract Booking Details",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate AI Response": {
+      "main": [
+        [
+          {
+            "node": "Save Customer Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Booking Details": {
+      "main": [
+        [
+          {
+            "node": "Generate Handoff Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Handoff Response": {
+      "main": [
+        [
+          {
+            "node": "IF Complete Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Complete Info": {
+      "main": [
+        [
+          {
+            "node": "Save Booking Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Customer Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Booking Request": {
+      "main": [
+        [
+          {
+            "node": "Format Owner Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Owner Notification": {
+      "main": [
+        [
+          {
+            "node": "Notify Owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Owner": {
+      "main": [
+        [
+          {
+            "node": "Save Customer Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Paths": {
+      "main": [
+        []
+      ]
+    },
+    "Save Customer Message": {
+      "main": [
+        [
+          {
+            "node": "Determine AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine AI Response": {
+      "main": [
+        [
+          {
+            "node": "Save AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save AI Response": {
+      "main": [
+        [
+          {
+            "node": "Format WhatsApp Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format WhatsApp Response": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Lead Exists": {
+      "main": [
+        [
+          {
+            "node": "IF Lead Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Lead Exists": {
+      "main": [
+        [
+          {
+            "node": "Update Existing Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create New Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Existing Lead": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create New Lead": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Get Recent Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "aa56d4f5-15d4-4bec-8cd4-678a01c90f79",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "b62fce8efbd620834b8caa25b7667ba878012cd5d427a72523a26d0f2d3e77bc"
+  },
+  "id": "Y8JY4plR2ZMsfPQy",
+  "tags": []
+}
